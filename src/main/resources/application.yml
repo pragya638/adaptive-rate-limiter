@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: adaptive-rate-limiter
+
+server:
+  port: 8080
+
+# Static (Phase 1) rate limiter configuration
+rate-limit:
+  enabled: true
+  max-requests: 5        # allowed requests per client per window
+  window: 30s            # length of the fixed window (ISO-8601 duration)
+  include-paths:         # paths that are rate limited
+    - /api/**
+  exclude-paths:         # paths that bypass the limiter
+    - /api/health
+  client-id-header: X-Client-Id   # falls back to caller IP when absent
