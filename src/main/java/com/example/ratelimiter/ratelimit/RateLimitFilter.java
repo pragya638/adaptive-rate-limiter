@@ -15,6 +15,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import com.example.ratelimiter.config.RateLimitProperties;
+import com.example.ratelimiter.monitoring.TrafficMetrics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.FilterChain;
@@ -35,12 +36,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final RateLimiter rateLimiter;
     private final RateLimitProperties properties;
     private final ObjectMapper objectMapper;
+    private final TrafficMetrics trafficMetrics;
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
-    public RateLimitFilter(RateLimiter rateLimiter, RateLimitProperties properties, ObjectMapper objectMapper) {
+    public RateLimitFilter(RateLimiter rateLimiter, RateLimitProperties properties, ObjectMapper objectMapper,
+            TrafficMetrics trafficMetrics) {
         this.rateLimiter = rateLimiter;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.trafficMetrics = trafficMetrics;
     }
 
     @Override
@@ -59,16 +63,49 @@ public class RateLimitFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
+        boolean isMetricsEndpoint = "/api/metrics".equals(request.getRequestURI())
+                || pathMatcher.match("/api/metrics", request.getRequestURI());
+
+        if (!isMetricsEndpoint) {
+            trafficMetrics.recordRequest();
+        }
+
         RateLimitDecision decision = rateLimiter.tryAcquire(resolveClientKey(request));
 
         response.setHeader(HEADER_LIMIT, Integer.toString(decision.limit()));
         response.setHeader(HEADER_REMAINING, Integer.toString(decision.remaining()));
 
         if (!decision.allowed()) {
+            if (!isMetricsEndpoint) {
+                trafficMetrics.recordRejectedByRateLimit();
+            }
             writeTooManyRequests(request, response, decision);
             return;
         }
-        filterChain.doFilter(request, response);
+        if (!isMetricsEndpoint) {
+            trafficMetrics.recordAllowed();
+        }
+
+        try {
+            filterChain.doFilter(request, response);
+        } catch (ServletException | IOException ex) {
+            if (!isMetricsEndpoint && response.getStatus() < 400) {
+                trafficMetrics.recordOtherError();
+            }
+            throw ex;
+        } catch (RuntimeException ex) {
+            if (!isMetricsEndpoint && response.getStatus() < 400) {
+                trafficMetrics.recordOtherError();
+            }
+            throw ex;
+        }
+
+        if (!isMetricsEndpoint) {
+            int status = response.getStatus();
+            if (status >= 400 && status != HttpStatus.TOO_MANY_REQUESTS.value()) {
+                trafficMetrics.recordOtherError();
+            }
+        }
     }
 
     private void writeTooManyRequests(HttpServletRequest request, HttpServletResponse response,

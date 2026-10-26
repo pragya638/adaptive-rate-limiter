@@ -14,4 +14,11 @@ rate-limit:
     - /api/**
   exclude-paths:         # paths that bypass the limiter
     - /api/health
+    - /api/metrics
   client-id-header: X-Client-Id   # falls back to caller IP when absent
+
+# Phase 3: Traffic monitoring and EWMA (tunable)
+monitoring:
+  ewma-alpha: 0.3        # 0 < alpha <= 1
+  observation-interval: 30s
+
