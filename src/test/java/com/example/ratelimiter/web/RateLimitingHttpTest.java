@@ -8,15 +8,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
+import com.example.ratelimiter.monitoring.TrafficMetrics;
 import com.example.ratelimiter.ratelimit.RateLimiter;
 
 /**
@@ -39,6 +42,9 @@ class RateLimitingHttpTest {
 
     @Autowired
     private RateLimiter rateLimiter;
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @BeforeEach
     void resetLimiter() {
@@ -106,5 +112,19 @@ class RateLimitingHttpTest {
 
     private ResultActions performAs(String clientId) throws Exception {
         return mockMvc.perform(get(DEMO).header("X-Client-Id", clientId));
+    }
+
+    @Test
+    @DisplayName("Other HTTP errors (non-429) are counted by TrafficMetrics without double counting")
+    void otherHttpErrorsCountedWithoutDoubleCounting() throws Exception {
+        TrafficMetrics tm = applicationContext.getBean(TrafficMetrics.class);
+        long otherBefore = tm.getOtherErrorResponses();
+        long totalBefore = tm.getTotalRequests();
+        mockMvc.perform(get("/api/does-not-exist")).andExpect(status().isNotFound());
+        long otherAfter = tm.getOtherErrorResponses();
+        long totalAfter = tm.getTotalRequests();
+        Assertions.assertTrue(otherAfter >= otherBefore);
+        Assertions.assertEquals(1, totalAfter - totalBefore);
+        Assertions.assertEquals(1, otherAfter - otherBefore);
     }
 }
