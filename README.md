@@ -23,3 +23,64 @@ This repository contains a Spring Boot static rate limiter (Phase 1), traffic mo
 - [Limitations](#limitations)
 - [Future Work](#future-work)
 - [References](#references)
+
+
+## Phase 5: Adaptive Decision Engine & Integration (In Progress)
+
+### Overview
+Phase 5 introduces an adaptive decision layer that evaluates recent traffic against anomaly detection and applies conservative adjustments with safety bounds.
+
+### Architecture (Mermaid)
+`mermaid
+flowchart TD
+  A[HTTP Requests] --> B[RateLimitFilter]
+  B --> C[StaticRateLimiter / Window]
+  C --> D[MonitoringService]
+  D --> E[TrafficMetricsDto]
+  E --> F[MetricsToFeaturesMapper / TrafficAssessment]
+  F --> G[AnomalyServiceClient
+  G[HTTP to ml-service]]
+  G --> H[IsolationForest API
+  H[POST /detect]]
+  H --> I[HttpAnomalyAssessmentProvider]
+  I --> J[AdaptiveDecisionEngine]
+  J --> K[AdaptiveLimitAdvisor
+  K[clamps to bounds]]
+  L[AdaptiveEvaluationScheduler
+  L[@Scheduled]] -.-> E
+  L -.-> K
+` 
+
+### Key Components (added)
+- AdaptiveDecisionEngine, DecisionAction, AdaptiveDecision, TrafficAssessment, AnomalyAssessment (conservative fallback when unavailable)
+- AnomalyAssessmentProvider + HttpAnomalyAssessmentProvider using JDK HttpClient
+- client/AnomalyServiceClient, client/TrafficFeaturesRequest, client/DetectResponseDto
+- mapping/MetricsToFeaturesMapper
+- limit/AdaptiveLimitAdvisor (thread-safe clamping; advisory only)
+- integration/AdaptiveEvaluationScheduler (periodic, catches all exceptions, disabled by default)
+
+### Configuration (application.yml)
+`yaml
+ml-service:
+  base-url: http://localhost:8000
+  connect-timeout-ms: 1000
+  read-timeout-ms: 1000
+
+adaptive:
+  enabled: false
+  evaluation-interval-seconds: 30
+` 
+
+### Safety & Fallbacks
+- If ML service unreachable/timeout/invalid/503/422 -> AnomalyAssessment.unavailable(); engine uses conservative defaults
+- Bounds enforced by AdaptiveEngineProperties and AdaptiveLimitAdvisor
+- Scheduler runs in background, never blocks request path, all exceptions caught
+- Advisor is advisory only (does not mutate StaticRateLimiter in current wiring)
+
+### Testing
+- Phase 5 unit tests: src/test/java/com/example/ratelimiter/adaptive/AdaptiveDecisionEngineTest.java (11 tests) - all passing
+
+### Remaining Limitations (Phase 5)
+- Dynamic application to StaticRateLimiter not yet implemented
+- End-to-end with live ml-service not verified by default tests
+- Full automation still under development
