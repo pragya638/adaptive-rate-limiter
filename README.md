@@ -19,6 +19,7 @@ The repository currently includes a Spring Boot static rate limiter (Phase 1), t
 - [Phase 1: Spring Boot Static Rate Limiter](#phase-1-spring-boot-static-rate-limiter)
 - [Phase 3: Traffic Monitoring and EWMA](#phase-3-traffic-monitoring-and-ewma)
 - [Phase 4: Isolation Forest Anomaly Detection Service](#phase-4-isolation-forest-anomaly-detection-service)
+- [Phase 5: Adaptive Decision Engine and Integration](#phase-5-adaptive-decision-engine-and-integration)
 - [Repository Structure](#repository-structure)
 - [Prerequisites](#prerequisites)
 - [Repository Setup and Quick Start](#repository-setup-and-quick-start)
@@ -60,13 +61,13 @@ This project explores combining conventional rate limiting, traffic trend analys
 - Input validation, including rejection of non-finite numeric values.
 - Automated tests for the Spring Boot and Python services.
 - Separate service code and documentation.
+- Phase 5 adaptive decision engine (advisory only) with configurable safety bounds.
 
 ### Planned or still in progress
 
 - Redis-backed rate-limit state.
 - React monitoring dashboard.
-- Integration between Spring Boot and the Python anomaly detection service.
-- Adaptive decision engine with configurable safety bounds.
+- Dynamic application of adaptive decisions to the live rate limiter.
 - End-to-end evaluation of the complete adaptive system.
 
 ## Technology Stack
@@ -106,7 +107,7 @@ The components are not yet fully integrated into a single adaptive pipeline. The
 | Phase 2 | Redis integration | Pending |
 | Phase 3 | Traffic monitoring and EWMA | Implemented and tested |
 | Phase 4 | Python FastAPI Isolation Forest service | Implemented and tested independently |
-| Phase 5 | Adaptive decision engine and service integration | Pending |
+| Phase 5 | Adaptive decision engine and service integration | In progress (advisory only) |
 | Phase 6 | React dashboard | Pending |
 | Phase 7 | End-to-end experiments and comparative evaluation | Pending |
 
@@ -201,6 +202,78 @@ The current model uses synthetic training data. Although automated tests and end
 Precision, recall, F1-score, false-positive rate, and detection latency must be evaluated using suitable labelled or controlled test data before drawing conclusions about model quality.
 
 The anomaly detection service is not yet connected to the Spring Boot rate limiter or an adaptive decision engine.
+
+## Phase 5: Adaptive Decision Engine and Integration
+
+### Overview
+
+Phase 5 adds the building blocks for an adaptive decision layer that evaluates recent traffic against anomaly detection and proposes conservative limit changes within configured safety bounds. The engine is currently **advisory only**; its decisions are not yet applied to live request enforcement.
+
+### Current behaviour and configuration
+
+- `adaptive.enabled=false` (default): the static fixed-window rate limiter remains active. Request handling continues to use `rate-limit.max-requests` and `rate-limit.window`.
+- `adaptive.enabled=true`: reserved for the planned dynamic integration. The flag is bound to `AdaptiveIntegrationProperties`, but no scheduler, advisor, or dynamic limiter currently applies bounded adaptive limit updates. Request enforcement therefore remains static even when this flag is enabled.
+- `adaptive-rate-limiter.*` controls the decision engine's bounds and thresholds (`min-limit`, `max-limit`, `initial-limit`, `increase-step`, `decrease-step`, and related thresholds). These defaults are currently independent of the static `rate-limit.max-requests` value.
+- `ml-service.*` controls the HTTP client used to call the Python anomaly detection service.
+
+### Architecture (Mermaid)
+
+```mermaid
+flowchart TD
+  A[HTTP Requests] --> B[RateLimitFilter]
+  B --> C[StaticRateLimiter]
+  C --> D[RateLimitDecision]
+  E[MonitoringService] --> F[TrafficMetricsDto]
+  F --> G[MetricsToFeaturesMapper]
+  G --> H[TrafficFeaturesRequest]
+  H --> I[AnomalyServiceClient]
+  I --> J[ml-service POST /detect]
+  K[AdaptiveDecisionEngine] --> L[AdaptiveDecision bounded by AdaptiveEngineProperties]
+  K -.->|advisory only; not wired| C
+  M[adaptive.enabled] -.->|not wired yet| C
+```
+
+### Implemented components
+
+- `AdaptiveDecisionEngine`, `DecisionAction`, `AdaptiveDecision`, `TrafficAssessment`, `AnomalyAssessment` (conservative fallback when anomaly information is unavailable).
+- `AnomalyAssessmentProvider` interface.
+- `client/AnomalyServiceClient`, `client/TrafficFeaturesRequest`, `client/DetectResponseDto`.
+- `mapping/MetricsToFeaturesMapper`.
+- `AdaptiveEngineProperties`, `AdaptiveIntegrationProperties`, and `MlServiceProperties`.
+- `DynamicRateLimiter` is currently an empty placeholder; no dynamic rate-limiter implementation exists yet.
+
+### Configuration (application.yml)
+
+```yaml
+ml-service:
+  base-url: http://localhost:8000
+  connect-timeout-ms: 1000
+  read-timeout-ms: 1000
+
+adaptive:
+  enabled: false
+  evaluation-interval-seconds: 30
+```
+
+### Safety and Fallbacks
+
+- The decision engine clamps proposed limits to the configured `min-limit` and `max-limit` bounds.
+- When anomaly information is unavailable, the engine uses conservative defaults and does not increase the limit.
+- `AnomalyServiceClient` calls the ML service over HTTP and throws `IOException` on transport or non-2xx responses. No automatic fallback is wired into the request path because the client is not yet invoked automatically.
+- No background scheduler currently evaluates traffic or updates limits.
+
+### Testing
+
+- Phase 5 unit tests: `src/test/java/com/example/ratelimiter/adaptive/AdaptiveDecisionEngineTest.java` (11 tests) — all passing.
+- The default tests do not require a running ML service and do not verify live end-to-end anomaly detection.
+
+### Remaining Limitations (Phase 5)
+
+- `DynamicRateLimiter` is not implemented, so adaptive decisions are not applied to live enforcement.
+- Setting `adaptive.enabled=true` does not currently change rate-limiting behaviour.
+- `MetricsToFeaturesMapper` and `AnomalyServiceClient` are not invoked automatically by a scheduler or the request path.
+- Integration with a live `ml-service` has not been validated end to end; only unit-level engine behaviour is covered by the default tests.
+- Full automation of the adaptive loop is still under development.
 
 ## Repository Structure
 
@@ -407,7 +480,7 @@ The exact JSON request schema is defined in `ml-service/app/schemas.py`. Consult
 - The Isolation Forest service is currently independent of the Spring Boot backend.
 - The anomaly detection model uses synthetic training data.
 - Real-world model accuracy has not yet been evaluated.
-- The adaptive decision engine has not yet been implemented.
+- The adaptive decision engine is advisory only and is not yet applied dynamically to the static rate limiter.
 - The React dashboard has not yet been implemented.
 - End-to-end performance comparisons between static and adaptive approaches are pending.
 
@@ -415,7 +488,7 @@ The exact JSON request schema is defined in `ml-service/app/schemas.py`. Consult
 
 1. Integrate Redis for shared rate-limit state.
 2. Connect the Spring Boot backend to the Python anomaly detection service.
-3. Implement an adaptive decision engine using traffic trends and anomaly assessments.
+3. Complete and integrate the adaptive decision engine using traffic trends and anomaly assessments.
 4. Enforce safe minimum and maximum rate limits to protect legitimate users.
 5. Build a React dashboard for live monitoring.
 6. Develop controlled traffic scenarios covering normal usage, traffic spikes, and anomalous behaviour.
@@ -424,4 +497,4 @@ The exact JSON request schema is defined in `ml-service/app/schemas.py`. Consult
 
 ---
 
-**Project status:** Phases 1, 3, and 4 have been implemented and tested independently according to the latest reported verification. Redis integration, end-to-end anomaly detection integration, the adaptive decision engine, the React dashboard, and full-system evaluation remain pending.
+**Project status:** Phases 1, 3, and 4 have been implemented and tested independently according to the latest reported verification. Phase 5 introduces an advisory adaptive decision engine with safety bounds; dynamic enforcement, Redis integration, the React dashboard, and full-system evaluation remain pending.
