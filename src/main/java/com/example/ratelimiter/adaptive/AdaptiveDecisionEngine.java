@@ -3,6 +3,7 @@ package com.example.ratelimiter.adaptive;
 import java.time.Clock;
 import java.time.Instant;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -19,6 +20,7 @@ public class AdaptiveDecisionEngine {
         this(properties, Clock.systemUTC());
     }
 
+    @Autowired
     public AdaptiveDecisionEngine(AdaptiveEngineProperties properties, Clock clock) {
         if (properties == null) {
             throw new IllegalArgumentException("properties cannot be null");
