@@ -1,3 +1,4 @@
+
 # AI-Driven Adaptive API Rate Limiter
 
 **Final Year Project | B.Tech Computer Science and Engineering**
@@ -30,156 +31,57 @@ The project does not claim to invent adaptive rate limiting or the Isolation For
 
 ## 3. System Architecture
 
-The system is divided into four major layers:
+The system follows a simple request-processing and adaptive-monitoring workflow.
 
-1. Request Processing Layer
-2. Traffic Monitoring and Trend Analysis Layer
-3. Machine Learning Anomaly Detection Layer
-4. Adaptive Decision and Control Layer
-
-The request-processing flow and adaptive monitoring flow work together. The first handles incoming requests, while the second analyses traffic and updates the limit for subsequent requests.
-
-### 3.1 High-Level Architecture Diagram
+### 3.1 Architecture Diagram
 
 ```mermaid
-flowchart TB
+flowchart TD
+    A["API Client"] --> B["Send API Request"]
+    B --> C["Spring Boot Application"]
+    C --> D["Rate Limit Filter"]
+    D --> E["Check Current Request Limit"]
+    E --> F{"Request Allowed?"}
 
-    subgraph REQUEST["1. REQUEST PROCESSING LAYER"]
-        A["API Clients"]
-        B["Spring Boot Application"]
-        C["RateLimitFilter<br/>Client Identification"]
-        D{"Rate Limiting Mode"}
-        E["StaticRateLimiter<br/>Fixed Window"]
-        F["DynamicRateLimiter<br/>Adaptive Limit"]
-        G{"Request Within Limit?"}
-        H["API Endpoint<br/>HTTP 200"]
-        I["Rate Limit Response<br/>HTTP 429"]
+    F -->|Yes| G["Process API Request"]
+    F -->|No| H["Return HTTP 429"]
 
-        A --> B --> C --> D
-        D -->|"Static Mode"| E
-        D -->|"Adaptive Mode"| F
-        E --> G
-        F --> G
-        G -->|"Allowed"| H
-        G -->|"Rejected"| I
-    end
+    G --> I["Record Traffic Metrics"]
+    H --> I
 
-    subgraph MONITORING["2. TRAFFIC MONITORING AND TREND ANALYSIS"]
-        J["Traffic Metrics Collection"]
-        K["MonitoringService"]
-        L["EWMA Traffic Trend Analysis"]
-        M["Adaptive Evaluation Scheduler"]
-        N["MetricsToFeaturesMapper"]
+    I --> J["EWMA Traffic Analysis"]
+    J --> K["Python FastAPI ML Service"]
+    K --> L["Isolation Forest Anomaly Detection"]
+    L --> M["Adaptive Decision Engine"]
+    M --> N["Adjust Request Limit"]
+    N --> O["Dynamic Rate Limiter"]
 
-        J --> K --> L --> M --> N
-    end
-
-    subgraph ML["3. MACHINE LEARNING ANOMALY DETECTION"]
-        O["Python FastAPI Service"]
-        P["Isolation Forest Model"]
-        Q["Anomaly Assessment"]
-
-        O --> P --> Q
-    end
-
-    subgraph ADAPTIVE["4. ADAPTIVE DECISION AND CONTROL"]
-        R["Adaptive Decision Engine"]
-        S["Adaptive Limit Advisor"]
-        T["Updated Dynamic Rate Limit"]
-
-        R --> S --> T
-    end
-
-    C -.->|"Record request metrics"| J
-    N -->|"Traffic features"| O
-    L -->|"Traffic trend"| R
-    Q -->|"Anomaly assessment"| R
-    T -.->|"Update current limit"| F
-
-    U["Redis<br/>Planned Extension"]
-    V["React Monitoring Dashboard<br/>Planned Extension"]
-
-    U -.->|"Shared state"| F
-    V -.->|"Monitoring data"| K
-    V -.->|"Adaptive status"| R
-
-    classDef request fill:#dbeafe,stroke:#2563eb,color:#172554
-    classDef monitoring fill:#ede9fe,stroke:#7c3aed,color:#3b0764
-    classDef machine fill:#fae8ff,stroke:#a21caf,color:#581c87
-    classDef adaptive fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef output fill:#dcfce7,stroke:#16a34a,color:#14532d
-
-    class A,B,C,D,E,F,G request
-    class J,K,L,M,N monitoring
-    class O,P,Q machine
-    class R,S,T adaptive
-    class H output
+    O -.->|"Updated limit for subsequent requests"| E
 ```
 
-**Diagram interpretation:**
+### 3.2 Working of the Architecture
 
-- Solid arrows represent the main processing sequence.
-- Dotted arrows represent monitoring connections, feedback, or planned integrations.
-- Redis and React are planned extensions, not completed components.
+1. **API Client:** Sends an HTTP request to the application.
+2. **Spring Boot Application:** Receives the request and forwards it to the rate-limit filter.
+3. **Rate Limit Filter:** Identifies the client and checks the current request limit.
+4. **Request Decision:** If the request is within the limit, it is processed. Otherwise, the application returns HTTP 429 (Too Many Requests).
+5. **Traffic Monitoring:** Records incoming request statistics and traffic behaviour.
+6. **EWMA Analysis:** Calculates a smoothed traffic trend to identify changes in request volume.
+7. **Python ML Service:** Receives traffic features and performs anomaly assessment.
+8. **Isolation Forest:** Identifies potentially unusual traffic patterns.
+9. **Adaptive Decision Engine:** Evaluates traffic trends and anomaly assessment to decide whether the current request limit should change.
+10. **Dynamic Rate Limiter:** Applies the updated limit to subsequent incoming requests.
 
-### 3.2 Architecture Components
-
-| Component | Responsibility |
-|---|---|
-| API Clients | Generate HTTP requests to access the protected API. |
-| Spring Boot Application | Handles incoming API requests. |
-| RateLimitFilter | Intercepts requests, identifies clients and applies rate-limit enforcement. |
-| StaticRateLimiter | Enforces predefined fixed-window request limits. |
-| DynamicRateLimiter | Enforces runtime-adjustable request limits in adaptive mode. |
-| MonitoringService | Collects request counts and traffic statistics. |
-| EWMA Calculator | Smooths traffic-rate observations and identifies traffic trends. |
-| Adaptive Evaluation Scheduler | Periodically evaluates completed monitoring windows. |
-| MetricsToFeaturesMapper | Converts monitoring data into features for anomaly assessment. |
-| Python FastAPI Service | Provides the machine-learning anomaly detection API. |
-| Isolation Forest | Assesses whether submitted traffic behaviour is potentially anomalous. |
-| Adaptive Decision Engine | Evaluates traffic trends and anomaly assessments to determine bounded limit changes. |
-| Adaptive Limit Advisor | Applies approved decisions to the dynamic rate limiter. |
-| Redis (Planned) | Will provide shared rate-limit state across backend instances. |
-| React Dashboard (Planned) | Will provide a visual interface for traffic and system monitoring. |
-
-### 3.3 Request Processing Flow
-
-The request-processing flow determines whether an incoming API request should be allowed or rejected.
-
-1. An API client sends an HTTP request.
-2. The Spring Boot application receives the request.
-3. `RateLimitFilter` intercepts the request.
-4. The application identifies the client using its configured client-identification mechanism.
-5. The configured operating mode selects either the static or adaptive rate limiter.
-6. The selected limiter checks the client's request count against the current limit.
-7. If the request is within the allowed limit, it is forwarded to the API endpoint.
-8. If the request exceeds the limit, the application returns HTTP 429.
-9. Request activity and outcomes are recorded for traffic monitoring.
-
-### 3.4 Adaptive Monitoring and Decision Flow
-
-The adaptive process runs independently of the incoming request path.
-
-1. `MonitoringService` collects request statistics over a configured observation window.
-2. The EWMA calculator calculates a smoothed traffic trend.
-3. `AdaptiveEvaluationScheduler` periodically evaluates the latest completed monitoring window.
-4. `MetricsToFeaturesMapper` converts traffic metrics into features.
-5. The Spring Boot application sends these features to the Python FastAPI anomaly detection service.
-6. The Isolation Forest model returns an anomaly assessment.
-7. `AdaptiveDecisionEngine` evaluates the traffic trend, anomaly assessment, and recovery conditions.
-8. `AdaptiveLimitAdvisor` applies the decision subject to cooldown and configured safety bounds.
-9. `DynamicRateLimiter` enforces the updated limit for subsequent incoming requests.
-
-If the ML service is unavailable, the system uses its configured conservative fallback behaviour.
+**Note:** Traffic monitoring and adaptive evaluation run separately from the immediate request-processing path. The updated limit affects subsequent requests, not the request that has already been processed.
 
 ## 4. Project Objectives
 
 - Protect APIs against excessive request traffic.
-- Enforce configurable request limits for individual clients.
-- Collect request metrics, including total, allowed and rate-limited requests.
+- Enforce configurable request limits.
+- Collect request metrics, including total, allowed and rejected requests.
 - Analyse traffic trends using EWMA.
 - Detect potentially anomalous traffic using Isolation Forest.
-- Integrate monitoring and anomaly assessments into an adaptive decision engine.
+- Integrate traffic monitoring and anomaly assessment into an adaptive decision engine.
 - Adjust request limits within predefined safety boundaries.
 - Compare static and adaptive rate-limiting approaches through controlled experiments.
 
@@ -235,7 +137,7 @@ If the ML service is unavailable, the system uses its configured conservative fa
 - Redis-backed distributed rate-limit state.
 - React monitoring dashboard.
 - Live end-to-end validation against the running Python ML service.
-- Controlled performance comparison of static and adaptive approaches.
+- Further controlled performance comparison of static and adaptive approaches.
 
 ## 8. Adaptive Decision Mechanism
 
@@ -293,7 +195,7 @@ The Python FastAPI service provides anomaly assessment through an Isolation Fore
 | GET | `/health` | ML service health |
 | GET | `/model/info` | Model information |
 | POST | `/detect` | Anomaly detection |
-| GET | `/docs` | Interactive API documentation |
+| GET | `/docs` | API documentation |
 
 Check the current controller and schema files for the exact request and response formats.
 
