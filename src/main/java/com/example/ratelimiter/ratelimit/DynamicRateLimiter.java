@@ -2,8 +2,13 @@ package com.example.ratelimiter.ratelimit;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Objects;
+
+import com.example.ratelimiter.adaptive.store.AdaptiveLimitStore;
+import com.example.ratelimiter.adaptive.store.InMemoryAdaptiveLimitStore;
+import com.example.ratelimiter.ratelimit.store.CounterIncrement;
+import com.example.ratelimiter.ratelimit.store.CounterStore;
+import com.example.ratelimiter.ratelimit.store.InMemoryCounterStore;
 
 /**
  * Phase 5 rate limiter with a thread-safe, dynamically adjustable request
@@ -14,17 +19,28 @@ import java.util.concurrent.atomic.AtomicInteger;
  * through {@link #updateLimit(int)}; every update is clamped to the configured
  * minimum and maximum bounds so callers cannot move the limiter outside its
  * safety envelope.
+ *
+ * <p>Counters and the current limit are delegated to storage abstractions. The
+ * default constructors keep the original in-process behaviour; the full
+ * constructor is used to plug in Redis-backed implementations.
  */
 public class DynamicRateLimiter implements RateLimiter {
 
-    private final AtomicInteger maxRequests;
     private final int minLimit;
     private final int maxLimit;
     private final long windowMillis;
     private final Clock clock;
-    private final ConcurrentHashMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
+    private final CounterStore counterStore;
+    private final AdaptiveLimitStore limitStore;
 
     public DynamicRateLimiter(int initialMaxRequests, int minLimit, int maxLimit, Duration window, Clock clock) {
+        this(minLimit, maxLimit, window, clock,
+                new InMemoryCounterStore(),
+                new InMemoryAdaptiveLimitStore(initialMaxRequests, minLimit, maxLimit));
+    }
+
+    public DynamicRateLimiter(int minLimit, int maxLimit, Duration window, Clock clock,
+            CounterStore counterStore, AdaptiveLimitStore limitStore) {
         if (minLimit < 1) {
             throw new IllegalArgumentException("minLimit must be >= 1");
         }
@@ -41,31 +57,29 @@ public class DynamicRateLimiter implements RateLimiter {
         this.maxLimit = maxLimit;
         this.windowMillis = window.toMillis();
         this.clock = clock;
-        this.maxRequests = new AtomicInteger(clamp(initialMaxRequests));
+        this.counterStore = Objects.requireNonNull(counterStore, "counterStore");
+        this.limitStore = Objects.requireNonNull(limitStore, "limitStore");
     }
 
     @Override
     public RateLimitDecision tryAcquire(String key) {
-        int limit = maxRequests.get();
+        int limit = limitStore.getCurrentLimit();
         long now = clock.millis();
         long windowStart = now - (now % windowMillis);
 
-        WindowCounter counter = counters.compute(key, (k, current) -> {
-            if (current == null || current.windowStart != windowStart) {
-                return new WindowCounter(windowStart, 1);
-            }
-            return new WindowCounter(current.windowStart, current.count + 1);
-        });
+        CounterIncrement counter = counterStore.increment(key, windowStart, windowMillis);
 
-        boolean allowed = counter.count <= limit;
-        int remaining = Math.max(0, limit - counter.count);
+        long count = counter.count();
+        boolean allowed = count <= limit;
+        long remainingLong = (long) limit - count;
+        int remaining = remainingLong <= 0 ? 0 : (int) Math.min(limit, remainingLong);
         long retryAfterSeconds = allowed ? 0L : secondsUntilReset(now, windowStart);
         return new RateLimitDecision(allowed, limit, remaining, retryAfterSeconds);
     }
 
     @Override
     public void reset() {
-        counters.clear();
+        counterStore.reset();
     }
 
     /**
@@ -74,11 +88,11 @@ public class DynamicRateLimiter implements RateLimiter {
      * @return the limit actually in effect after clamping
      */
     public int updateLimit(int proposedLimit) {
-        return maxRequests.updateAndGet(previous -> clamp(proposedLimit));
+        return limitStore.updateLimit(clamp(proposedLimit));
     }
 
     public int getCurrentLimit() {
-        return maxRequests.get();
+        return limitStore.getCurrentLimit();
     }
 
     public int getMinLimit() {
@@ -102,8 +116,5 @@ public class DynamicRateLimiter implements RateLimiter {
     private long secondsUntilReset(long now, long windowStart) {
         long millisLeft = windowStart + windowMillis - now;
         return Math.max(1L, (millisLeft + 999) / 1000);
-    }
-
-    private record WindowCounter(long windowStart, int count) {
     }
 }

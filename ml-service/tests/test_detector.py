@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.detector import (
+    DEFAULT_OBSERVATION_INTERVAL_SECONDS,
     FEATURE_NAMES,
     ZERO_BASELINE_BURST_RATIO,
     AnomalyDetector,
@@ -14,10 +15,11 @@ from app.detector import (
     compute_burst_ratio,
     compute_error_rate,
     compute_request_rate,
+    derive_features,
 )
 from app.schemas import TrafficFeatures
 
-from .conftest import NORMAL_SAMPLE, UNUSUAL_SAMPLE
+from .conftest import NORMAL_SAMPLE, SHARED_WINDOW_CONTRACT, UNUSUAL_SAMPLE
 
 
 # --------------------------------------------------------------------------- #
@@ -31,6 +33,9 @@ def test_detector_initialises_with_expected_defaults() -> None:
     assert detector.contamination == pytest.approx(0.05)
     assert detector.n_estimators == 200
     assert detector.random_state == 42
+    assert detector.observation_interval_seconds == pytest.approx(
+        DEFAULT_OBSERVATION_INTERVAL_SECONDS
+    )
 
 
 @pytest.mark.parametrize(
@@ -40,6 +45,9 @@ def test_detector_initialises_with_expected_defaults() -> None:
         {"contamination": 0.9},
         {"n_estimators": 0},
         {"training_samples": 5},
+        {"observation_interval_seconds": 0},
+        {"observation_interval_seconds": -5},
+        {"observation_interval_seconds": float("inf")},
     ],
 )
 def test_detector_rejects_invalid_configuration(kwargs: dict) -> None:
@@ -64,6 +72,76 @@ def test_synthetic_data_is_deterministic_and_well_formed() -> None:
     assert np.all(first >= 0.0)
     # error_rate column must stay a valid proportion.
     assert np.all((first[:, 1] >= 0.0) & (first[:, 1] <= 1.0))
+    # Quiet windows are part of the normal distribution.
+    assert np.min(first[:, 0]) < 1.0
+    assert np.any(first[:, 3] == 0.0)
+
+
+def test_synthetic_feature_contract_derives_rate_from_the_same_count() -> None:
+    detector = AnomalyDetector(random_state=3)
+    data = detector.generate_synthetic_normal_data(500)
+    request_rate = data[:, 0]
+    request_count = data[:, 3]
+    interval = detector.observation_interval_seconds
+
+    # Training uses the same observation interval for request_count and
+    # request_rate that inference uses (30s by default).
+    assert interval == pytest.approx(DEFAULT_OBSERVATION_INTERVAL_SECONDS)
+    assert np.allclose(request_rate, request_count / interval)
+    assert np.allclose(
+        [compute_request_rate(count, interval) for count in request_count],
+        request_rate,
+    )
+
+
+def test_synthetic_feature_contract_follows_configured_interval() -> None:
+    detector = AnomalyDetector(random_state=11, observation_interval_seconds=7.5)
+    data = detector.generate_synthetic_normal_data(400)
+
+    assert detector.observation_interval_seconds == pytest.approx(7.5)
+    assert np.allclose(data[:, 0], data[:, 3] / 7.5)
+
+
+def test_derive_features_matches_shared_cross_language_contract() -> None:
+    contract = SHARED_WINDOW_CONTRACT
+    features = derive_features(
+        request_count=contract["request_count"],
+        error_count=contract["error_count"],
+        baseline_rate=contract["baseline_rate"],
+        interval_seconds=contract["interval_seconds"],
+    )
+
+    assert features.request_count == contract["request_count"]
+    assert features.request_rate == pytest.approx(contract["expected_request_rate"])
+    assert features.error_rate == pytest.approx(contract["expected_error_rate"])
+    assert features.burst_ratio == pytest.approx(contract["expected_burst_ratio"])
+
+
+def test_synthetic_feature_contract_handles_idle_windows() -> None:
+    data = AnomalyDetector(random_state=3).generate_synthetic_normal_data(500)
+    idle_rows = data[:, 3] == 0.0
+
+    assert np.any(idle_rows)
+    # No requests -> no errors and no burst.
+    assert np.all(data[idle_rows, 1] == 0.0)
+    assert np.all(data[idle_rows, 2] == 0.0)
+
+
+def test_inference_feature_contract_matches_training_semantics() -> None:
+    interval_seconds = 5.0
+    request_count = 125
+    features = TrafficFeatures(
+        request_rate=compute_request_rate(request_count, interval_seconds),
+        error_rate=compute_error_rate(5, request_count),
+        burst_ratio=compute_burst_ratio(25.0, 20.0),
+        request_count=request_count,
+    )
+
+    vector = features.to_vector()
+    assert vector[0] == pytest.approx(25.0)
+    assert vector[1] == pytest.approx(0.04)
+    assert vector[2] == pytest.approx(1.25)
+    assert vector[3] == pytest.approx(125.0)
 
 
 def test_fit_accepts_explicit_samples_and_validates_shape() -> None:
@@ -154,6 +232,9 @@ def test_info_reports_documented_fields() -> None:
     assert info["n_estimators"] == 75
     assert info["random_state"] == 5
     assert info["feature_names"] == list(FEATURE_NAMES)
+    assert info["observation_interval_seconds"] == pytest.approx(
+        DEFAULT_OBSERVATION_INTERVAL_SECONDS
+    )
     assert info["is_fitted"] is True
 
 

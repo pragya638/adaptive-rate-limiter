@@ -11,6 +11,9 @@ public class AdaptiveDecisionEngine {
     private final AdaptiveEngineProperties properties;
     private final Clock clock;
     private int currentLimit;
+    private int consecutiveNormalWindows;
+    private int consecutiveAnomalousWindows;
+    private int consecutiveGrowthWindows;
 
     public AdaptiveDecisionEngine() {
         this(defaultProperties(), Clock.systemUTC());
@@ -47,129 +50,240 @@ public class AdaptiveDecisionEngine {
 
         int baseLimit = currentLimit;
 
-        if (!anomaly.isAvailable()) {
-            if (isHighErrorRate(traffic)) {
-                int proposed = clamp(baseLimit - properties.getDecreaseStep());
-                if (proposed == baseLimit) {
-                    currentLimit = baseLimit;
-                    return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_BOUNDS", "Error rate high but already at minimum limit.", Instant.now(clock));
-                }
-                currentLimit = proposed;
-                return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, "HIGH_ERROR_NO_ANOMALY_INFO", "High error rate detected; decreasing limit conservatively.", Instant.now(clock));
-            }
-            currentLimit = baseLimit;
-            return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "ANOMALY_UNAVAILABLE_CONSERVATIVE_FALLBACK", "Anomaly assessment unavailable - maintaining current limit (no increase).", Instant.now(clock));
+        if (isIdleWindow(traffic)) {
+            resetStreaks();
+            return keep(baseLimit, "NO_TRAFFIC",
+                    "No traffic in the latest observation window - maintaining current limit.");
         }
 
-        if (anomaly.isAnomalous()) {
-            int proposed = clamp(baseLimit - properties.getDecreaseStep());
-            if (proposed == baseLimit) {
-                currentLimit = baseLimit;
-                return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MIN_LIMIT", "Anomaly detected but already at minimum limit.", Instant.now(clock));
+        if (!anomaly.isAvailable()) {
+            consecutiveAnomalousWindows = 0;
+            consecutiveGrowthWindows = 0;
+            if (isHighErrorRate(traffic)) {
+                consecutiveNormalWindows = 0;
+                return decrease(baseLimit, "HIGH_ERROR_NO_ANOMALY_INFO",
+                        "High error rate detected; decreasing limit conservatively.");
             }
-            currentLimit = proposed;
-            return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, "ANOMALY_DETECTED", "Anomalous traffic detected - decreasing limit for safety.", Instant.now(clock));
+            // Without an anomaly signal we neither recover nor penalise the
+            // limit; hold the recovery streak rather than resetting it.
+            return keep(baseLimit, "ANOMALY_UNAVAILABLE_CONSERVATIVE_FALLBACK",
+                    "Anomaly assessment unavailable - maintaining current limit (no increase).");
+        }
+
+        boolean candidate = anomaly.isAnomalous() && passesScoreGate(anomaly);
+        if (candidate && properties.isAnomalyRequireCorroboration() && !isCorroborated(traffic)) {
+            candidate = false;
+        }
+        if (candidate) {
+            consecutiveAnomalousWindows++;
+        } else {
+            consecutiveAnomalousWindows = 0;
+        }
+
+        if (candidate && consecutiveAnomalousWindows >= properties.getAnomalyConfirmationWindows()) {
+            consecutiveNormalWindows = 0;
+            consecutiveGrowthWindows = 0;
+            return decrease(baseLimit, "ANOMALY_DETECTED",
+                    "Confirmed anomalous traffic - decreasing limit gradually for safety.");
         }
 
         if (isHighErrorRate(traffic)) {
-            int proposed = clamp(baseLimit - properties.getDecreaseStep());
-            if (proposed == baseLimit) {
-                currentLimit = baseLimit;
-                return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MIN_LIMIT", "High error rate but already at minimum limit.", Instant.now(clock));
-            }
-            currentLimit = proposed;
-            return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, "HIGH_ERROR_RATE", "High error rate observed - decreasing limit.", Instant.now(clock));
+            consecutiveNormalWindows = 0;
+            consecutiveGrowthWindows = 0;
+            return decrease(baseLimit, "HIGH_ERROR_RATE",
+                    "High error rate observed - decreasing limit gradually.");
         }
 
         Double currentRate = traffic.getCurrentRequestRate();
         Double ewmaRate = traffic.getEwmaRequestRate();
-        if (currentRate != null && ewmaRate != null && !Double.isNaN(currentRate) && !Double.isInfinite(currentRate)
-                && !Double.isNaN(ewmaRate) && !Double.isInfinite(ewmaRate) && ewmaRate > 0.0) {
-            double ratio = currentRate / ewmaRate;
-            if (Math.abs(ratio - 3.0) < 1e-9 && baseLimit == 100) {
-                int proposed = clamp(baseLimit - properties.getDecreaseStep());
-                if (proposed == baseLimit) {
-                    currentLimit = baseLimit;
-                    return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MIN_LIMIT", "Traffic spike detected but already at minimum limit.", Instant.now(clock));
-                }
+        boolean rateAvailable = isUsableRate(currentRate) && isUsableRate(ewmaRate) && ewmaRate > 0.0;
+        double ratio = rateAvailable ? currentRate / ewmaRate : 0.0;
+
+        if (rateAvailable && ratio >= properties.getSpikeRatioThreshold()) {
+            boolean corroborated = anomaly.isAnomalous() || isHighErrorRate(traffic);
+            if (!properties.isSpikeRequiresCorroboration() || corroborated) {
+                resetStreaks();
+                return decrease(baseLimit, "TRAFFIC_SPIKE",
+                        "Sudden traffic spike detected - decreasing limit as a precaution.");
+            }
+            consecutiveGrowthWindows = 0;
+            return keep(baseLimit, "TRAFFIC_SPIKE_UNCONFIRMED",
+                    "Traffic burst without anomaly or error corroboration - maintaining current limit.");
+        }
+
+        if (candidate) {
+            return keep(baseLimit, "ANOMALY_PENDING",
+                    "Anomaly detected but not yet confirmed - monitoring before decreasing the limit.");
+        }
+
+        if (rateAvailable && ratio >= properties.getGrowthRatioThreshold()) {
+            consecutiveGrowthWindows++;
+            if (consecutiveGrowthWindows >= properties.getGrowthConfirmationWindows()) {
+                return increase(baseLimit, properties.getIncreaseStep(), growthCeiling(),
+                        "SUSTAINED_GROWTH",
+                        "Sustained traffic growth observed - increasing limit within bounds.");
+            }
+            return keep(baseLimit, "GROWTH_PENDING",
+                    "Traffic growth observed but not yet sustained - monitoring before increasing the limit.");
+        }
+        consecutiveGrowthWindows = 0;
+
+        consecutiveNormalWindows++;
+        if (baseLimit < properties.getInitialLimit()
+                && consecutiveNormalWindows >= properties.getRecoveryWindows()) {
+            int proposed = (int) Math.min((long) properties.getInitialLimit(),
+                    clamp((long) baseLimit + properties.getRecoveryStep()));
+            if (proposed > baseLimit) {
                 currentLimit = proposed;
-                return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, "TRAFFIC_SPIKE", "Sudden traffic spike detected - decreasing limit as precaution.", Instant.now(clock));
-            }
-            if (Math.abs(ratio - 2.0) < 1e-9 && baseLimit == 100) {
-                int proposed = clamp(baseLimit + properties.getIncreaseStep());
-                if (proposed == baseLimit) {
-                    currentLimit = baseLimit;
-                    return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MAX_LIMIT", "Sustained growth detected but already at maximum limit.", Instant.now(clock));
-                }
-                if (properties.isEnableOscillationGuard() && isSmallAdjustment(baseLimit, proposed)) {
-                    currentLimit = baseLimit;
-                    return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "OSCILLATION_GUARD", "Adjustment below threshold - keeping current limit for stability.", Instant.now(clock));
-                }
-                currentLimit = proposed;
-                return new AdaptiveDecision(DecisionAction.INCREASE_LIMIT, baseLimit, proposed, "SUSTAINED_GROWTH", "Sustained traffic growth observed - increasing limit within bounds.", Instant.now(clock));
-            }
-            if (baseLimit == 990 && properties.getMaxLimit() == 1000) {
-                int proposed = clamp(baseLimit + properties.getIncreaseStep());
-                currentLimit = proposed;
-                return new AdaptiveDecision(DecisionAction.INCREASE_LIMIT, baseLimit, proposed, "SUSTAINED_GROWTH", "Sustained traffic growth observed - increasing limit within bounds.", Instant.now(clock));
-            }
-            if (baseLimit == 1000 && properties.getMaxLimit() == 1000) {
-                currentLimit = baseLimit;
-                return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MAX_LIMIT", "Sustained growth detected but already at maximum limit.", Instant.now(clock));
-            }
-            if (ratio >= properties.getGrowthRatioThreshold()) {
-                if (ratio >= properties.getSpikeRatioThreshold() && ratio > 10.0) {
-                    int proposed = clamp(baseLimit - properties.getDecreaseStep());
-                    if (proposed == baseLimit) {
-                        currentLimit = baseLimit;
-                        return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MIN_LIMIT", "Traffic spike detected but already at minimum limit.", Instant.now(clock));
-                    }
-                    currentLimit = proposed;
-                    return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, "TRAFFIC_SPIKE", "Sudden traffic spike detected - decreasing limit as precaution.", Instant.now(clock));
-                } else {
-                    int proposed = clamp(baseLimit + properties.getIncreaseStep());
-                    if (proposed == baseLimit) {
-                        currentLimit = baseLimit;
-                        return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MAX_LIMIT", "Sustained growth detected but already at maximum limit.", Instant.now(clock));
-                    }
-                    if (properties.isEnableOscillationGuard() && isSmallAdjustment(baseLimit, proposed)) {
-                        currentLimit = baseLimit;
-                        return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "OSCILLATION_GUARD", "Adjustment below threshold - keeping current limit for stability.", Instant.now(clock));
-                    }
-                    currentLimit = proposed;
-                    return new AdaptiveDecision(DecisionAction.INCREASE_LIMIT, baseLimit, proposed, "SUSTAINED_GROWTH", "Sustained traffic growth observed - increasing limit within bounds.", Instant.now(clock));
-                }
+                return new AdaptiveDecision(DecisionAction.INCREASE_LIMIT, baseLimit, proposed, "RECOVERY",
+                        "Traffic has been normal for several windows - recovering the limit gradually.",
+                        Instant.now(clock));
             }
         }
 
+        return keep(baseLimit, "NORMAL_TRAFFIC", "Normal traffic patterns - maintaining current limit.");
+    }
+
+    private AdaptiveDecision keep(int baseLimit, String reasonCode, String explanation) {
         currentLimit = baseLimit;
-        return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "NORMAL_TRAFFIC", "Normal traffic patterns - maintaining current limit.", Instant.now(clock));
+        return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, reasonCode,
+                explanation, Instant.now(clock));
+    }
+
+    private AdaptiveDecision decrease(int baseLimit, String reasonCode, String explanation) {
+        int decrease = calculateDecrease(baseLimit);
+        int proposed = clamp((long) baseLimit - decrease);
+        if (proposed == baseLimit) {
+            currentLimit = baseLimit;
+            return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MIN_LIMIT",
+                    "Limit is already at the configured minimum.", Instant.now(clock));
+        }
+        currentLimit = proposed;
+        return new AdaptiveDecision(DecisionAction.DECREASE_LIMIT, baseLimit, proposed, reasonCode,
+                explanation, Instant.now(clock));
+    }
+
+    private AdaptiveDecision increase(int baseLimit, int step, int ceiling, String reasonCode, String explanation) {
+        int proposed = clampUpTo((long) baseLimit + step, ceiling);
+        if (proposed == baseLimit) {
+            currentLimit = baseLimit;
+            return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, baseLimit, baseLimit, "AT_MAX_LIMIT",
+                    "Limit is already at the configured maximum.", Instant.now(clock));
+        }
+        currentLimit = proposed;
+        return new AdaptiveDecision(DecisionAction.INCREASE_LIMIT, baseLimit, proposed, reasonCode,
+                explanation, Instant.now(clock));
+    }
+
+    /**
+     * Bounded decrease: the drop is the smaller of the configured step and the
+     * configured fraction of the current limit, and never less than one. The
+     * fraction is rounded down so a single decrease can never remove more than
+     * the configured proportion (except the unavoidable minimum drop of one at
+     * very small limits). This keeps small limits (for example 5) from
+     * collapsing to the minimum after a single anomaly while still allowing
+     * repeated anomalies to reduce the limit steadily.
+     */
+    private int calculateDecrease(int baseLimit) {
+        int proportional = (int) Math.floor(baseLimit * properties.getDecreaseFraction());
+        return Math.max(1, Math.min(properties.getDecreaseStep(), proportional));
     }
 
     private boolean isHighErrorRate(TrafficAssessment traffic) {
-        Double errorRate = traffic.getErrorRate();
+        Double errorRate = traffic.getEffectiveErrorRate();
         if (errorRate == null || Double.isNaN(errorRate) || Double.isInfinite(errorRate)) {
             return false;
         }
         return errorRate >= properties.getHighErrorRateThreshold();
     }
 
-    private boolean isSmallAdjustment(int from, int to) {
-        if (from == 0) {
-            return false;
+    /**
+     * Whether an ML anomaly should count as a candidate. When a score
+     * threshold is configured the score must meet it, but a missing or
+     * non-finite score falls back to the boolean result rather than being
+     * treated as either an anomaly or a clean window.
+     */
+    private boolean passesScoreGate(AnomalyAssessment anomaly) {
+        Double threshold = properties.getAnomalyScoreThreshold();
+        if (threshold == null) {
+            return true;
         }
-        double ratio = Math.abs((double)(to - from)) / (double)from;
-        return ratio < properties.getAdjustmentThreshold();
+        Double score = anomaly.getAnomalyScore();
+        if (score == null || Double.isNaN(score) || Double.isInfinite(score)) {
+            return true;
+        }
+        return score >= threshold;
     }
 
-    private int clamp(int value) {
+    /**
+     * Corroboration for an anomaly: either the error rate is already high or
+     * the traffic trend is elevated. An increasing trend on its own is never
+     * treated as proof of an attack; it only corroborates an existing anomaly
+     * assessment.
+     */
+    private boolean isCorroborated(TrafficAssessment traffic) {
+        if (isHighErrorRate(traffic)) {
+            return true;
+        }
+        Double currentRate = traffic.getCurrentRequestRate();
+        Double ewmaRate = traffic.getEwmaRequestRate();
+        if (isUsableRate(currentRate) && isUsableRate(ewmaRate) && ewmaRate > 0.0) {
+            return (currentRate / ewmaRate) >= properties.getGrowthRatioThreshold();
+        }
+        return false;
+    }
+
+    private boolean isUsableRate(Double rate) {
+        return rate != null && !Double.isNaN(rate) && !Double.isInfinite(rate);
+    }
+
+    private boolean isIdleWindow(TrafficAssessment traffic) {
+        Long windowCount = traffic.getWindowRequestCount();
+        Double currentRate = traffic.getCurrentRequestRate();
+        if (windowCount != null) {
+            return windowCount == 0L && (currentRate == null || currentRate <= 0.0);
+        }
+        return currentRate != null && currentRate <= 0.0
+                && (traffic.getTotalRequests() == null || traffic.getTotalRequests() == 0L);
+    }
+
+    private int growthCeiling() {
+        Integer ceiling = properties.getGrowthCeiling();
+        if (ceiling == null) {
+            return properties.getMaxLimit();
+        }
+        return Math.min(ceiling, properties.getMaxLimit());
+    }
+
+    private int clamp(long value) {
         if (value < properties.getMinLimit()) {
             return properties.getMinLimit();
         }
         if (value > properties.getMaxLimit()) {
             return properties.getMaxLimit();
         }
-        return value;
+        return (int) value;
+    }
+
+    private int clampUpTo(long value, int ceiling) {
+        int lower = properties.getMinLimit();
+        int upper = Math.min(ceiling, properties.getMaxLimit());
+        if (upper < lower) {
+            upper = lower;
+        }
+        if (value < lower) {
+            return lower;
+        }
+        if (value > upper) {
+            return upper;
+        }
+        return (int) value;
+    }
+
+    private void resetStreaks() {
+        consecutiveNormalWindows = 0;
+        consecutiveAnomalousWindows = 0;
+        consecutiveGrowthWindows = 0;
     }
 
     public synchronized int getCurrentLimit() {
@@ -178,5 +292,6 @@ public class AdaptiveDecisionEngine {
 
     public synchronized void reset() {
         this.currentLimit = clamp(properties.getInitialLimit());
+        resetStreaks();
     }
 }

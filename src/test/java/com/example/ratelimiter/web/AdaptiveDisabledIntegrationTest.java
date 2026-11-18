@@ -3,6 +3,7 @@ package com.example.ratelimiter.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +52,18 @@ class AdaptiveDisabledIntegrationTest {
         assertThat(applicationContext.getBeansOfType(DynamicRateLimiter.class)).isEmpty();
         assertThat(applicationContext.getBeansOfType(AdaptiveLimitAdvisor.class)).isEmpty();
         assertThat(applicationContext.getBeansOfType(AdaptiveEvaluationScheduler.class)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("status endpoint reports static mode and the configured static limit")
+    void statusEndpointReportsStaticMode() throws Exception {
+        mockMvc.perform(get("/api/adaptive/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.enabled").value(false))
+                .andExpect(jsonPath("$.mode").value("STATIC"))
+                .andExpect(jsonPath("$.currentLimit").value(2))
+                .andExpect(jsonPath("$.lastEvaluationAt").doesNotExist())
+                .andExpect(jsonPath("$.latestAnomaly").doesNotExist());
     }
 
     @Test

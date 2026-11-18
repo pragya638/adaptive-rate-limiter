@@ -5,8 +5,9 @@ or **anomalous** using a scikit-learn **Isolation Forest** model. It is a standa
 service: it does **not** import Spring Boot, Redis, or any database.
 
 > Phase 4 of the final-year project *"AI-Driven Adaptive API Rate Limiting Using
-> Traffic Trend Analysis and Anomaly Detection."* Phase 1 (Spring Boot static
-> rate limiter) lives at the repository root and is unchanged by this service.
+> Traffic Trend Analysis and Anomaly Detection."* The Spring Boot backend lives
+> at the repository root and consumes this service in Phase 5 when adaptive mode
+> is enabled.
 
 ---
 
@@ -16,9 +17,9 @@ Given four numeric features describing one observation window of API traffic, th
 service answers: *"Does this window look anomalous?"* It returns a boolean flag, a
 human-readable label, and an unbounded anomaly score.
 
-The service **only detects and reports** anomalies. It does **not** yet make
-rate-limit decisions, does not talk to Redis, and does not change the Java
-static rate limiter. Those are later phases.
+The service **only detects and reports** anomalies. It does not make
+rate-limit decisions, does not talk to Redis, and does not access a database.
+The Spring Boot backend consumes its `/detect` response in adaptive mode.
 
 ## 2. Architecture and file responsibilities
 
@@ -135,12 +136,23 @@ Interactive docs: <http://127.0.0.1:8000/docs>
 | `ML_N_ESTIMATORS` | `200` | Number of isolation trees |
 | `ML_RANDOM_STATE` | `42` | Fixed seed (reproducibility) |
 | `ML_TRAINING_SAMPLES` | `2000` | Synthetic samples used to fit |
+| `ML_OBSERVATION_INTERVAL_SECONDS` | `30.0` | Window length used to derive `request_rate` and synthetic `request_count`; must match the Java `monitoring.observation-interval` |
 
 Example (PowerShell):
 
 ```powershell
 $env:ML_CONTAMINATION = "0.1"; uvicorn app.main:app --port 8000
 ```
+
+For a 2-second experiment that matches the Java observation interval:
+
+```powershell
+$env:ML_OBSERVATION_INTERVAL_SECONDS = "2"
+uvicorn app.main:app --port 8000
+```
+
+Changing this value retrains the synthetic dataset on the next startup. The
+value is reported by `GET /model/info` as `observation_interval_seconds`.
 
 ## 6. Run the tests
 
@@ -150,8 +162,8 @@ Windows PowerShell:
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-With the venv active: `python -m pytest`. Expected result: all tests pass
-(see the final report for the exact count).
+With the venv active: `python -m pytest`. Current result: 76 tests pass with
+one dependency deprecation warning.
 
 ## 7. Example `curl` commands (all endpoints)
 
@@ -164,11 +176,11 @@ curl.exe http://127.0.0.1:8000/health
 # Model info
 curl.exe http://127.0.0.1:8000/model/info
 
-# Detect (normal traffic)
-curl.exe -X POST http://127.0.0.1:8000/detect -H "Content-Type: application/json" -d "{\"request_rate\":20.0,\"error_rate\":0.02,\"burst_ratio\":1.0,\"request_count\":20}"
+# Detect (normal traffic over the default 30-second window)
+curl.exe -X POST http://127.0.0.1:8000/detect -H "Content-Type: application/json" -d "{\"request_rate\":20.0,\"error_rate\":0.02,\"burst_ratio\":1.0,\"request_count\":600}"
 
-# Detect (clearly unusual traffic)
-curl.exe -X POST http://127.0.0.1:8000/detect -H "Content-Type: application/json" -d "{\"request_rate\":800.0,\"error_rate\":0.95,\"burst_ratio\":10.0,\"request_count\":800}"
+# Detect (clearly unusual traffic over the default 30-second window)
+curl.exe -X POST http://127.0.0.1:8000/detect -H "Content-Type: application/json" -d "{\"request_rate\":800.0,\"error_rate\":0.95,\"burst_ratio\":10.0,\"request_count\":24000}"
 
 # Invalid payload (missing field) -> HTTP 422
 curl.exe -i -X POST http://127.0.0.1:8000/detect -H "Content-Type: application/json" -d "{\"request_rate\":20.0}"
@@ -179,7 +191,7 @@ Bash/macOS equivalent:
 ```bash
 curl -s -X POST http://127.0.0.1:8000/detect \
   -H "Content-Type: application/json" \
-  -d '{"request_rate":20.0,"error_rate":0.02,"burst_ratio":1.0,"request_count":20}'
+  -d '{"request_rate":20.0,"error_rate":0.02,"burst_ratio":1.0,"request_count":600}'
 ```
 
 ## 8. Example request and response JSON
@@ -191,17 +203,17 @@ Request (`POST /detect`):
   "request_rate": 20.0,
   "error_rate": 0.02,
   "burst_ratio": 1.0,
-  "request_count": 20
+  "request_count": 600
 }
 ```
 
-Response:
+Response (default 30-second interval, verified):
 
 ```json
 {
   "is_anomaly": false,
   "prediction": "normal",
-  "anomaly_score": 0.38314958734728743,
+  "anomaly_score": 0.4040823433996796,
   "model": "IsolationForest"
 }
 ```
@@ -209,14 +221,14 @@ Response:
 An unusual window and its response:
 
 ```json
-{ "request_rate": 800.0, "error_rate": 0.95, "burst_ratio": 10.0, "request_count": 800 }
+{ "request_rate": 800.0, "error_rate": 0.95, "burst_ratio": 10.0, "request_count": 24000 }
 ```
 
 ```json
 {
   "is_anomaly": true,
   "prediction": "anomaly",
-  "anomaly_score": 0.7867459831359004,
+  "anomaly_score": 0.8160218171442218,
   "model": "IsolationForest"
 }
 ```
@@ -236,6 +248,7 @@ An unusual window and its response:
   "n_estimators": 200,
   "random_state": 42,
   "feature_names": ["request_rate", "error_rate", "burst_ratio", "request_count"],
+  "observation_interval_seconds": 30.0,
   "is_fitted": true,
   "training_samples": 2000
 }
@@ -282,10 +295,12 @@ No labelled real dataset was available, so `detector.py` generates a
 - `request_rate` ~ log-normal around 20 req/s (`sigma = 0.4`) — always positive
 - `error_rate` ~ `Beta(2, 50)` (low, within `[0, 1]`)
 - `burst_ratio` → absolute value of `Normal(1.0, 0.15)` (centred on no burst)
-- `request_count` → Poisson samples consistent with the rate over a 1-second window
+- `request_count` → Poisson samples consistent with the rate over the configured
+  observation window (default 30 seconds, override with
+  `ML_OBSERVATION_INTERVAL_SECONDS`)
 
-All columns are clipped at `0`. Because the seed is fixed, the same seed always
-produces identical data and identical model scores.
+All columns are clipped at `0`. Because the seed is fixed, the same seed and
+interval always produce identical data and identical model scores.
 
 ## 11. Limitations and risks of synthetic data
 
@@ -302,16 +317,22 @@ produces identical data and identical model scores.
 - No feature scaling is applied (tree-based models do not require it), but feature
   ranges must remain stable between training and serving.
 
-## 12. Future integration with the Spring Boot backend
+## 12. Integration with the Spring Boot backend
 
-This service is intentionally decoupled. A later phase can wire it to Spring Boot:
+This service is intentionally decoupled, but Phase 5 wires it into the adaptive
+loop:
 
-1. The Spring Boot app computes the four features per client/window and `POST`s
-   them to `/detect`.
+1. Spring Boot computes the four features for each completed monitoring window
+   and `POST`s them to `/detect`.
 2. Spring Boot reads `is_anomaly` / `anomaly_score` and combines them with the
-   EWMA traffic trend to make an adaptive rate-limit decision.
+   EWMA traffic trend to make a bounded adaptive rate-limit decision.
 3. The JSON contract above is the stable interface; hosts/ports are configurable
    so no production URLs or secrets are hardcoded here.
 
-Not implemented in this phase, by design: Redis, the adaptive decision engine,
-changes to the static rate limiter, database access, and the React dashboard.
+The Java `/detect` call path has been validated locally against this service,
+including real anomaly responses and gradual limit decreases. To keep the feature
+contract identical, set `ML_OBSERVATION_INTERVAL_SECONDS` to the same value as
+the Java `monitoring.observation-interval`.
+
+Still out of scope for this service: Redis, decision logic, database access, and
+the React dashboard.

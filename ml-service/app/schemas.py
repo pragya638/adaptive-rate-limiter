@@ -104,6 +104,7 @@ class ModelInfoResponse(BaseModel):
     n_estimators: int
     random_state: int
     feature_names: list[str]
+    observation_interval_seconds: float
     is_fitted: bool
     training_samples: int
 

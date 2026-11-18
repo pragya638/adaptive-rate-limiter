@@ -7,9 +7,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import com.example.ratelimiter.adaptive.AdaptiveEngineProperties;
+import com.example.ratelimiter.adaptive.store.AdaptiveLimitStore;
 import com.example.ratelimiter.ratelimit.DynamicRateLimiter;
 import com.example.ratelimiter.ratelimit.RateLimiter;
 import com.example.ratelimiter.ratelimit.StaticRateLimiter;
+import com.example.ratelimiter.ratelimit.store.CounterStore;
 
 @Configuration
 public class RateLimitConfiguration {
@@ -21,19 +23,21 @@ public class RateLimitConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "adaptive.enabled", havingValue = "false", matchIfMissing = true)
-    public RateLimiter staticRateLimiter(RateLimitProperties properties, Clock clock) {
-        return new StaticRateLimiter(properties.getMaxRequests(), properties.getWindow(), clock);
+    public RateLimiter staticRateLimiter(RateLimitProperties properties, Clock clock, CounterStore counterStore) {
+        return new StaticRateLimiter(properties.getMaxRequests(), properties.getWindow(), clock, counterStore);
     }
 
     @Bean
     @ConditionalOnProperty(name = "adaptive.enabled", havingValue = "true")
     public DynamicRateLimiter dynamicRateLimiter(RateLimitProperties rateLimitProperties,
-            AdaptiveEngineProperties adaptiveProperties, Clock clock) {
+            AdaptiveEngineProperties adaptiveProperties, Clock clock,
+            CounterStore counterStore, AdaptiveLimitStore limitStore) {
         return new DynamicRateLimiter(
-                adaptiveProperties.getInitialLimit(),
                 adaptiveProperties.getMinLimit(),
                 adaptiveProperties.getMaxLimit(),
                 rateLimitProperties.getWindow(),
-                clock);
+                clock,
+                counterStore,
+                limitStore);
     }
 }

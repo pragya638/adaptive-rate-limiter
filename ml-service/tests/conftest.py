@@ -17,17 +17,32 @@ def fitted_detector() -> AnomalyDetector:
 
 
 # A clearly typical window: close to the centre of the synthetic normal data.
+# The default observation interval is 30 seconds, so 600 requests == 20 req/s.
 NORMAL_SAMPLE = {
     "request_rate": 20.0,
     "error_rate": 0.02,
     "burst_ratio": 1.0,
-    "request_count": 20,
+    "request_count": 600,
 }
 
 # A deliberately extreme window: very high rate, almost all errors, huge burst.
+# 24,000 requests over 30 seconds == 800 req/s.
 UNUSUAL_SAMPLE = {
     "request_rate": 800.0,
     "error_rate": 0.95,
     "burst_ratio": 10.0,
-    "request_count": 800,
+    "request_count": 24000,
+}
+
+# Shared cross-language contract fixture. The Java
+# MetricsToFeaturesMapperTest asserts exactly the same outputs for its
+# equivalent (window_count=25, window_duration=50s, error_rate=0.2, ewma=10).
+SHARED_WINDOW_CONTRACT = {
+    "request_count": 25,
+    "error_count": 5,
+    "baseline_rate": 10.0,
+    "interval_seconds": 50.0,
+    "expected_request_rate": 0.5,
+    "expected_error_rate": 0.2,
+    "expected_burst_ratio": 0.05,
 }

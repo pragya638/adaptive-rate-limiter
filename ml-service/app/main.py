@@ -36,6 +36,7 @@ detector = AnomalyDetector(
     n_estimators=settings.n_estimators,
     random_state=settings.random_state,
     training_samples=settings.training_samples,
+    observation_interval_seconds=settings.observation_interval_seconds,
 )
 
 

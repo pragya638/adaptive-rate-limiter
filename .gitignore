@@ -19,3 +19,36 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+
+# Generated evaluation artifacts
+evaluation/results/
+
+# Local merge/helper artifacts
+README_HEAD.md
+README_MASTER.md
+header.txt
+conflict_part1.txt
+fix_tm.py

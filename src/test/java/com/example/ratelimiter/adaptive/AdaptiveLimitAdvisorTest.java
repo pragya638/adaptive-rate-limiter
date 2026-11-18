@@ -36,7 +36,8 @@ class AdaptiveLimitAdvisorTest {
         engineProperties.setHighErrorRateThreshold(0.1);
         engineProperties.setSpikeRatioThreshold(1.5);
         engineProperties.setGrowthRatioThreshold(1.2);
-        engineProperties.setAdjustmentThreshold(0.05);
+        engineProperties.setAnomalyConfirmationWindows(1);
+        engineProperties.setGrowthConfirmationWindows(1);
 
         integrationProperties = new AdaptiveIntegrationProperties();
         integrationProperties.setCooldownSeconds(0);
@@ -60,7 +61,7 @@ class AdaptiveLimitAdvisorTest {
     @Test
     @DisplayName("sustained traffic growth increases the active limit")
     void growthIncreasesLimit() {
-        TrafficAssessment traffic = new TrafficAssessment(100.0, 50.0, 0.01, 2000L, 1980L, 20L);
+        TrafficAssessment traffic = new TrafficAssessment(65.0, 50.0, 0.01, 2000L, 1980L, 20L);
 
         AdaptiveDecision decision = advisor.evaluateAndApply(traffic, normalAnomaly());
 
@@ -89,6 +90,9 @@ class AdaptiveLimitAdvisorTest {
         advisor = new AdaptiveLimitAdvisor(engine, limiter, integrationProperties, clock);
 
         advisor.evaluateAndApply(normalTraffic(), anomalous());
+        assertThat(limiter.getCurrentLimit()).isEqualTo(12);
+
+        advisor.evaluateAndApply(normalTraffic(), anomalous());
         assertThat(limiter.getCurrentLimit()).isEqualTo(10);
 
         advisor.evaluateAndApply(normalTraffic(), anomalous());
@@ -113,7 +117,31 @@ class AdaptiveLimitAdvisorTest {
         clock.advanceBy(Duration.ofSeconds(61));
         AdaptiveDecision third = advisor.evaluateAndApply(normalTraffic(), anomalous());
         assertThat(third.getAction()).isEqualTo(DecisionAction.DECREASE_LIMIT);
-        assertThat(limiter.getCurrentLimit()).isEqualTo(60);
+        // 20% of 80 is 16, which is below the absolute decrease step of 20.
+        assertThat(limiter.getCurrentLimit()).isEqualTo(64);
+    }
+
+    @Test
+    @DisplayName("skipped calls do not extend the cooldown window")
+    void skippedCallsDoNotExtendCooldown() {
+        integrationProperties.setCooldownSeconds(10);
+        advisor = new AdaptiveLimitAdvisor(engine, limiter, integrationProperties, clock);
+
+        AdaptiveDecision first = advisor.evaluateAndApply(normalTraffic(), anomalous());
+        assertThat(first.getAction()).isEqualTo(DecisionAction.DECREASE_LIMIT);
+        assertThat(limiter.getCurrentLimit()).isEqualTo(80);
+
+        clock.advanceBy(Duration.ofSeconds(5));
+        AdaptiveDecision skipped = advisor.evaluateAndApply(normalTraffic(), anomalous());
+        assertThat(skipped.getReasonCode()).isEqualTo("COOLDOWN_ACTIVE");
+        assertThat(limiter.getCurrentLimit()).isEqualTo(80);
+
+        // Ten seconds after the *last real evaluation* (not the skipped call),
+        // adaptation must be allowed again.
+        clock.advanceBy(Duration.ofSeconds(5));
+        AdaptiveDecision resumed = advisor.evaluateAndApply(normalTraffic(), anomalous());
+        assertThat(resumed.getAction()).isEqualTo(DecisionAction.DECREASE_LIMIT);
+        assertThat(limiter.getCurrentLimit()).isEqualTo(64);
     }
 
     private TrafficAssessment normalTraffic() {
