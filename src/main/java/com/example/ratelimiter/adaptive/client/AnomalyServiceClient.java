@@ -27,23 +27,49 @@ public class AnomalyServiceClient {
     }
 
     public DetectResponseDto detect(TrafficFeaturesRequest request) throws IOException, InterruptedException {
-        if (!properties.isEnabled()) {
-            throw new IOException("ML service disabled");
-        }
         if (request == null) {
             throw new IllegalArgumentException("request cannot be null");
         }
         String body = objectMapper.writeValueAsString(request);
         HttpRequest httpRequest = HttpRequest.newBuilder()
-                .uri(URI.create(properties.getBaseUrl().replaceAll("/+$", "") + "/detect"))
+                .uri(uri("/detect"))
                 .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
-        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        return send(httpRequest, DetectResponseDto.class);
+    }
+
+    public MlHealthDto health() throws IOException, InterruptedException {
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(uri("/health"))
+                .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
+                .GET()
+                .build();
+        return send(httpRequest, MlHealthDto.class);
+    }
+
+    public MlModelInfoDto modelInfo() throws IOException, InterruptedException {
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(uri("/model/info"))
+                .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
+                .GET()
+                .build();
+        return send(httpRequest, MlModelInfoDto.class);
+    }
+
+    private URI uri(String path) throws IOException {
+        if (!properties.isEnabled()) {
+            throw new IOException("ML service disabled");
+        }
+        return URI.create(properties.getBaseUrl().replaceAll("/+$", "") + path);
+    }
+
+    private <T> T send(HttpRequest request, Class<T> responseType) throws IOException, InterruptedException {
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("ML service returned status: " + response.statusCode());
         }
-        return objectMapper.readValue(response.body(), DetectResponseDto.class);
+        return objectMapper.readValue(response.body(), responseType);
     }
 }

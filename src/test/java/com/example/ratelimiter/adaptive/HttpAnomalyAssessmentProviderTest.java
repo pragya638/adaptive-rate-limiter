@@ -7,6 +7,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +22,7 @@ import com.example.ratelimiter.adaptive.client.AnomalyServiceClient;
 import com.example.ratelimiter.adaptive.client.DetectResponseDto;
 import com.example.ratelimiter.adaptive.client.TrafficFeaturesRequest;
 import com.example.ratelimiter.adaptive.mapping.MetricsToFeaturesMapper;
+import com.example.ratelimiter.observability.MlEvaluationTracker;
 
 @ExtendWith(MockitoExtension.class)
 class HttpAnomalyAssessmentProviderTest {
@@ -26,11 +30,14 @@ class HttpAnomalyAssessmentProviderTest {
     @Mock
     private AnomalyServiceClient client;
 
+    private MlEvaluationTracker evaluationTracker;
     private HttpAnomalyAssessmentProvider provider;
 
     @BeforeEach
     void setUp() {
-        provider = new HttpAnomalyAssessmentProvider(client, new MetricsToFeaturesMapper());
+        evaluationTracker = new MlEvaluationTracker(
+                Clock.fixed(Instant.parse("2026-01-01T10:00:00Z"), ZoneOffset.UTC));
+        provider = new HttpAnomalyAssessmentProvider(client, new MetricsToFeaturesMapper(), evaluationTracker);
     }
 
     @Test
@@ -50,6 +57,8 @@ class HttpAnomalyAssessmentProviderTest {
         assertThat(assessment.getAnomalyScore()).isEqualTo(0.42);
         assertThat(assessment.getPrediction()).isEqualTo("anomaly");
         assertThat(assessment.getModel()).isEqualTo("IsolationForest");
+        assertThat(evaluationTracker.getLastSuccessAt()).isEqualTo(Instant.parse("2026-01-01T10:00:00Z"));
+        assertThat(evaluationTracker.getLastFailureAt()).isNull();
         verify(client).detect(any(TrafficFeaturesRequest.class));
     }
 
@@ -62,6 +71,9 @@ class HttpAnomalyAssessmentProviderTest {
 
         assertThat(assessment.isAvailable()).isFalse();
         assertThat(assessment.isAnomalous()).isFalse();
+        assertThat(evaluationTracker.getLastSuccessAt()).isNull();
+        assertThat(evaluationTracker.getLastFailureAt()).isEqualTo(Instant.parse("2026-01-01T10:00:00Z"));
+        assertThat(evaluationTracker.getLastFailureDetail()).contains("IOException");
     }
 
     @Test
@@ -71,6 +83,8 @@ class HttpAnomalyAssessmentProviderTest {
         when(client.detect(any(TrafficFeaturesRequest.class))).thenReturn(response);
 
         assertThat(provider.assess(traffic()).isAvailable()).isFalse();
+        assertThat(evaluationTracker.getLastFailureAt()).isEqualTo(Instant.parse("2026-01-01T10:00:00Z"));
+        assertThat(evaluationTracker.getLastFailureDetail()).contains("invalid detection response");
     }
 
     @Test

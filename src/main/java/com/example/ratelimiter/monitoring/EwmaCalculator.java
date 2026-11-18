@@ -32,14 +32,14 @@ public class EwmaCalculator {
         smoothed = Double.valueOf(sNew);
     }
 
-    public double getSmoothed() {
+    public synchronized double getSmoothed() {
         if (smoothed == null) {
             return 0.0;
         }
         return smoothed.doubleValue();
     }
 
-    public boolean isInitialized() {
+    public synchronized boolean isInitialized() {
         return initialized;
     }
 

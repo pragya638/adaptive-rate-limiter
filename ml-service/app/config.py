@@ -7,8 +7,11 @@ production URLs are stored here.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
+
+from .detector import DEFAULT_OBSERVATION_INTERVAL_SECONDS
 
 # Environment variable names (documented in the README).
 ENV_HOST = "ML_HOST"
@@ -18,6 +21,7 @@ ENV_CONTAMINATION = "ML_CONTAMINATION"
 ENV_N_ESTIMATORS = "ML_N_ESTIMATORS"
 ENV_RANDOM_STATE = "ML_RANDOM_STATE"
 ENV_TRAINING_SAMPLES = "ML_TRAINING_SAMPLES"
+ENV_OBSERVATION_INTERVAL_SECONDS = "ML_OBSERVATION_INTERVAL_SECONDS"
 
 # Isolation Forest expects contamination in the open interval (0, 0.5].
 MIN_CONTAMINATION = 0.001
@@ -63,6 +67,10 @@ class Settings:
     random_state: int = 42
     training_samples: int = 2000
 
+    # Must match the Spring Boot monitoring observation window so the feature
+    # contract is identical in training and inference.
+    observation_interval_seconds: float = DEFAULT_OBSERVATION_INTERVAL_SECONDS
+
     def __post_init__(self) -> None:
         if not self.host:
             raise ValueError("host must not be empty")
@@ -77,6 +85,14 @@ class Settings:
             raise ValueError("n_estimators must be >= 1")
         if self.training_samples < 10:
             raise ValueError("training_samples must be >= 10")
+        if (
+            not math.isfinite(self.observation_interval_seconds)
+            or self.observation_interval_seconds <= 0
+        ):
+            raise ValueError(
+                "observation_interval_seconds must be a finite number > 0, got "
+                f"{self.observation_interval_seconds}"
+            )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -89,4 +105,8 @@ class Settings:
             n_estimators=_get_int(ENV_N_ESTIMATORS, 200),
             random_state=_get_int(ENV_RANDOM_STATE, 42),
             training_samples=_get_int(ENV_TRAINING_SAMPLES, 2000),
+            observation_interval_seconds=_get_float(
+                ENV_OBSERVATION_INTERVAL_SECONDS,
+                DEFAULT_OBSERVATION_INTERVAL_SECONDS,
+            ),
         )

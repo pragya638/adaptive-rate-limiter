@@ -162,6 +162,7 @@ def test_model_info_reports_expected_fields(client) -> None:
         "burst_ratio",
         "request_count",
     ]
+    assert body["observation_interval_seconds"] > 0
     assert body["is_fitted"] is True
     assert body["training_samples"] > 0
 
@@ -205,24 +206,3 @@ def test_detect_does_not_mask_unexpected_errors(client, monkeypatch) -> None:
     # The failure must not be silently converted into a normal prediction.
     assert "prediction" not in response.text
     assert "is_anomaly" not in response.text
-
-
-# --------------------------------------------------------------------------- #
-# Model info
-# --------------------------------------------------------------------------- #
-def test_model_info_reports_expected_fields(client) -> None:
-    response = client.get("/model/info")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["model"] == "IsolationForest"
-    assert 0.0 < body["contamination"] <= 0.5
-    assert isinstance(body["n_estimators"], int)
-    assert body["feature_names"] == [
-        "request_rate",
-        "error_rate",
-        "burst_ratio",
-        "request_count",
-    ]
-    assert body["is_fitted"] is True
-    assert body["training_samples"] > 0

@@ -18,8 +18,20 @@ import jakarta.validation.constraints.NotNull;
 @ConfigurationProperties(prefix = "rate-limit")
 public class RateLimitProperties {
 
+    public enum StoreType {
+        MEMORY,
+        REDIS
+    }
+
     /** Master switch, useful for debugging and tests. */
     private boolean enabled = true;
+
+    /**
+     * Counter storage backend. The default keeps the original in-memory
+     * behaviour; Redis is opt-in so the application still works without a
+     * Redis server running.
+     */
+    private StoreType store = StoreType.MEMORY;
 
     /** Maximum number of requests allowed per client within one window. */
     @Min(1)
@@ -44,6 +56,14 @@ public class RateLimitProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public StoreType getStore() {
+        return store;
+    }
+
+    public void setStore(StoreType store) {
+        this.store = store;
     }
 
     public int getMaxRequests() {

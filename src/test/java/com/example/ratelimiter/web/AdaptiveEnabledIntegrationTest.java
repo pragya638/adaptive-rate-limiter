@@ -6,8 +6,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Instant;
+
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,6 +23,8 @@ import com.example.ratelimiter.adaptive.AdaptiveLimitAdvisor;
 import com.example.ratelimiter.adaptive.AnomalyAssessment;
 import com.example.ratelimiter.adaptive.TrafficAssessment;
 import com.example.ratelimiter.adaptive.integration.AdaptiveEvaluationScheduler;
+import com.example.ratelimiter.monitoring.CompletedWindowStore;
+import com.example.ratelimiter.monitoring.TrafficMetricsDto;
 import com.example.ratelimiter.ratelimit.DynamicRateLimiter;
 import com.example.ratelimiter.ratelimit.RateLimiter;
 import com.example.ratelimiter.ratelimit.StaticRateLimiter;
@@ -31,7 +38,8 @@ import com.example.ratelimiter.ratelimit.StaticRateLimiter;
         "adaptive-rate-limiter.initial-limit=3",
         "adaptive-rate-limiter.increase-step=1",
         "adaptive-rate-limiter.decrease-step=1",
-        "adaptive.evaluation-interval-seconds=3600",
+        "adaptive-rate-limiter.anomaly-confirmation-windows=1",
+        "adaptive-rate-limiter.growth-confirmation-windows=1",
         "adaptive.cooldown-seconds=0",
         "monitoring.observation-interval=1h",
         "ml-service.base-url=http://127.0.0.1:1",
@@ -39,6 +47,7 @@ import com.example.ratelimiter.ratelimit.StaticRateLimiter;
         "ml-service.read-timeout-ms=50"
 })
 @AutoConfigureMockMvc
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class AdaptiveEnabledIntegrationTest {
 
     private static final String DEMO = "/api/demo";
@@ -59,9 +68,13 @@ class AdaptiveEnabledIntegrationTest {
     private AdaptiveEvaluationScheduler scheduler;
 
     @Autowired
+    private CompletedWindowStore completedWindowStore;
+
+    @Autowired
     private ApplicationContext applicationContext;
 
     @Test
+    @Order(1)
     @DisplayName("adaptive enabled wires the dynamic limiter, advisor, and scheduler")
     void adaptiveEnabledWiresDynamicComponents() {
         assertThat(rateLimiter).isInstanceOf(DynamicRateLimiter.class);
@@ -72,8 +85,14 @@ class AdaptiveEnabledIntegrationTest {
     }
 
     @Test
+    @Order(2)
     @DisplayName("ML failure is conservative and advisor updates are enforced over HTTP")
     void mlFailureIsConservativeAndUpdatesAreEnforced() throws Exception {
+        completedWindowStore.publish(new TrafficMetricsDto(
+                1000L, 990L, 10L, 0.01, 60.0, 55.0, Instant.parse("2026-11-04T00:00:00Z"),
+                25L, 20L, 5L, 0.08, 1L,
+                Instant.parse("2026-11-04T00:00:00Z"),
+                Instant.parse("2026-11-04T00:00:30Z"), 30.0));
         assertThatCode(scheduler::evaluate).doesNotThrowAnyException();
         assertThat(dynamicRateLimiter.getCurrentLimit()).isEqualTo(3);
 

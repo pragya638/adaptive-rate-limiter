@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    @apply bg-slate-50;
+  }
+
+  body {
+    @apply min-h-screen bg-slate-50 font-sans text-slate-900 antialiased;
+  }
+
+  ::selection {
+    @apply bg-brand-100 text-brand-800;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-card;
+  }
+
+  .card-body {
+    @apply p-5 sm:p-6;
+  }
+
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2;
+  }
+
+  .table-shell {
+    @apply overflow-x-auto;
+  }
+
+  .data-table {
+    @apply min-w-full divide-y divide-slate-200 text-left text-sm;
+  }
+
+  .data-table thead {
+    @apply bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500;
+  }
+
+  .data-table th {
+    @apply whitespace-nowrap px-4 py-3 font-semibold;
+  }
+
+  .data-table td {
+    @apply whitespace-nowrap px-4 py-3 text-slate-600;
+  }
+
+  .data-table tbody {
+    @apply divide-y divide-slate-100;
+  }
+
+  .data-table tbody tr {
+    @apply transition-colors hover:bg-slate-50/70;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus-ring disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .tab-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus-ring;
+  }
+}

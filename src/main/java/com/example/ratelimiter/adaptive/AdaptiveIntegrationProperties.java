@@ -9,10 +9,10 @@ import jakarta.validation.constraints.Min;
 @ConfigurationProperties(prefix = "adaptive")
 public class AdaptiveIntegrationProperties {
     private boolean enabled = false;
-    @Min(1)
-    private long evaluationIntervalSeconds = 30;
     @Min(0)
     private long cooldownSeconds = 10;
+    @Min(1)
+    private long evaluationLockTtlSeconds = 60;
 
     public boolean isEnabled() {
         return enabled;
@@ -22,19 +22,19 @@ public class AdaptiveIntegrationProperties {
         this.enabled = enabled;
     }
 
-    public long getEvaluationIntervalSeconds() {
-        return evaluationIntervalSeconds;
-    }
-
-    public void setEvaluationIntervalSeconds(long evaluationIntervalSeconds) {
-        this.evaluationIntervalSeconds = evaluationIntervalSeconds;
-    }
-
     public long getCooldownSeconds() {
         return cooldownSeconds;
     }
 
     public void setCooldownSeconds(long cooldownSeconds) {
         this.cooldownSeconds = cooldownSeconds;
+    }
+
+    public long getEvaluationLockTtlSeconds() {
+        return evaluationLockTtlSeconds;
+    }
+
+    public void setEvaluationLockTtlSeconds(long evaluationLockTtlSeconds) {
+        this.evaluationLockTtlSeconds = evaluationLockTtlSeconds;
     }
 }

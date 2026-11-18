@@ -27,7 +27,11 @@ public class AdaptiveLimitAdvisor {
     private final AdaptiveIntegrationProperties properties;
     private final Clock clock;
 
-    private Instant lastEvaluationAt;
+    private volatile Instant lastEvaluationAt;
+    private volatile Instant lastAdaptationAt;
+    private volatile AdaptiveDecision lastDecision;
+    private volatile AnomalyAssessment lastAnomalyAssessment;
+    private volatile TrafficAssessment lastTrafficAssessment;
 
     public AdaptiveLimitAdvisor(AdaptiveDecisionEngine decisionEngine, DynamicRateLimiter rateLimiter,
             AdaptiveIntegrationProperties properties, Clock clock) {
@@ -44,20 +48,53 @@ public class AdaptiveLimitAdvisor {
      */
     public synchronized AdaptiveDecision evaluateAndApply(TrafficAssessment traffic, AnomalyAssessment anomaly) {
         Instant now = clock.instant();
+        lastAnomalyAssessment = anomaly;
+        lastTrafficAssessment = traffic;
+
         if (isCooldownActive(now)) {
             int currentLimit = rateLimiter.getCurrentLimit();
-            return new AdaptiveDecision(DecisionAction.KEEP_LIMIT, currentLimit, currentLimit,
+            AdaptiveDecision skipped = new AdaptiveDecision(DecisionAction.KEEP_LIMIT, currentLimit, currentLimit,
                     "COOLDOWN_ACTIVE", "Adaptive update skipped during cooldown.", now);
+            lastDecision = skipped;
+            return skipped;
         }
 
-        AdaptiveDecision decision = decisionEngine.evaluate(traffic, anomaly);
-        rateLimiter.updateLimit(decision.getProposedLimit());
+        // Only record the evaluation time when the engine actually runs. If
+        // every skipped call refreshed this timestamp, frequent callers could
+        // extend the cooldown forever and starve adaptation.
         lastEvaluationAt = now;
+        AdaptiveDecision decision = decisionEngine.evaluate(traffic, anomaly);
+        int previousLimit = rateLimiter.getCurrentLimit();
+        int appliedLimit = rateLimiter.updateLimit(decision.getProposedLimit());
+        if (appliedLimit != previousLimit) {
+            lastAdaptationAt = now;
+        }
+        lastDecision = decision;
         return decision;
     }
 
     public int getCurrentLimit() {
         return rateLimiter.getCurrentLimit();
+    }
+
+    public Instant getLastEvaluationAt() {
+        return lastEvaluationAt;
+    }
+
+    public Instant getLastAdaptationAt() {
+        return lastAdaptationAt;
+    }
+
+    public AdaptiveDecision getLastDecision() {
+        return lastDecision;
+    }
+
+    public AnomalyAssessment getLastAnomalyAssessment() {
+        return lastAnomalyAssessment;
+    }
+
+    public TrafficAssessment getLastTrafficAssessment() {
+        return lastTrafficAssessment;
     }
 
     private boolean isCooldownActive(Instant now) {
